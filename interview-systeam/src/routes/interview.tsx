@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 import { useState, useEffect, useRef } from "react";
-import { Send, ArrowLeft, Bot, User, BrainCircuit, Activity, Award, Loader2, Star } from "lucide-react";
+import { Send, ArrowLeft, Bot, User, BrainCircuit, Activity, Award, Loader2, Star, Mic, MicOff, Video, VideoOff, Volume2, VolumeX } from "lucide-react";
 
 const searchSchema = z.object({
   skills: z.string().optional(),
@@ -22,20 +22,114 @@ function InterviewPage() {
   
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(true); // AI starts by typing the first question
+  const [isTyping, setIsTyping] = useState(true);
   const [score, setScore] = useState<string | null>(null);
   const [difficulty, setDifficulty] = useState<string>("Beginner");
   
-  // Final report state
+  // Hardware States
+  const [isVideoOn, setIsVideoOn] = useState(true);
+  const [isMuted, setIsMuted] = useState(false); // For AI Voice
+  const [isListening, setIsListening] = useState(false); // For User Mic
+  
   const [isFinished, setIsFinished] = useState(false);
   const [report, setReport] = useState<any>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<any>(null);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom of chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  // Handle Camera Stream
+  useEffect(() => {
+    if (isVideoOn && !isFinished) {
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then((stream) => {
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        })
+        .catch(err => {
+          console.error("Camera error:", err);
+          setIsVideoOn(false);
+        });
+    } else {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+    }
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isVideoOn, isFinished]);
+
+  // Handle Speech Recognition Setup
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      
+      recognition.onresult = (event: any) => {
+        let transcript = "";
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        setInput(transcript);
+      };
+      
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+      
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    } else {
+      setInput("");
+      try {
+        recognitionRef.current?.start();
+        setIsListening(true);
+      } catch (e) {
+        console.error("Speech recognition error:", e);
+      }
+    }
+  };
+
+  const speakText = (text: string) => {
+    if (isMuted || !window.speechSynthesis) return;
+    
+    window.speechSynthesis.cancel(); // stop any current speech
+    
+    // Clean text (remove markdown asterisks)
+    const cleanText = text.replace(/\*\*/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    
+    // Try to find a good English voice
+    const voices = window.speechSynthesis.getVoices();
+    const englishVoice = voices.find(v => v.lang.includes('en') && (v.name.includes('Google') || v.name.includes('Female')));
+    if (englishVoice) {
+      utterance.voice = englishVoice;
+    }
+    
+    utterance.rate = 1.0;
+    utterance.pitch = 1.1;
+    window.speechSynthesis.speak(utterance);
+  };
 
   // Start the interview
   useEffect(() => {
@@ -56,25 +150,37 @@ function InterviewPage() {
         const data = await res.json();
         
         if (mounted) {
-          setMessages([{ role: "model", text: data.nextQuestion || "Let's begin. Tell me about yourself." }]);
+          const aiMessage = data.nextQuestion || "Let's begin. Tell me about yourself.";
+          setMessages([{ role: "model", text: aiMessage }]);
           if (data.nextDifficultyLevel) setDifficulty(data.nextDifficultyLevel);
           setIsTyping(false);
+          speakText(aiMessage);
         }
       } catch (err) {
         console.error(err);
         if (mounted) {
-          setMessages([{ role: "model", text: "Sorry, I am having trouble connecting to the backend server. Please make sure it is running on port 5000." }]);
+          setMessages([{ role: "model", text: "Sorry, network error." }]);
           setIsTyping(false);
         }
       }
     };
 
     startInterview();
-    return () => { mounted = false; };
+    
+    // Cleanup voices when leaving
+    return () => { 
+      mounted = false; 
+      window.speechSynthesis?.cancel();
+    };
   }, [skills]);
 
   const handleSend = async () => {
     if (!input.trim() || isTyping) return;
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    }
 
     const userText = input.trim();
     setInput("");
@@ -84,7 +190,6 @@ function InterviewPage() {
     setIsTyping(true);
 
     try {
-      // Map frontend messages to Google GenAI required format
       const history = messages.map(m => ({
         role: m.role,
         parts: [{ text: m.text }]
@@ -103,12 +208,14 @@ function InterviewPage() {
         if (evalData.score) setScore(evalData.score);
         if (evalData.nextDifficultyLevel) setDifficulty(evalData.nextDifficultyLevel);
         
-        // Add the AI's feedback + next question to the chat
-        const feedbackText = `**Score:** ${evalData.score}\n\n**Feedback:** ${evalData.strengths?.join(", ") || "Good effort."}\n\n**Next Question:** ${evalData.nextQuestion}`;
+        const feedbackText = `Score: ${evalData.score}. Feedback: ${evalData.strengths?.join(", ") || "Good effort"}. Next Question: ${evalData.nextQuestion}`;
         
         setMessages([...newMessages, { role: "model", text: feedbackText }]);
+        speakText(feedbackText);
       } else {
-        setMessages([...newMessages, { role: "model", text: "Could not evaluate properly. Let's move on: What is your next strongest skill?" }]);
+        const fallback = "Could not evaluate properly. Let's move on: What is your next strongest skill?";
+        setMessages([...newMessages, { role: "model", text: fallback }]);
+        speakText(fallback);
       }
     } catch (err) {
       console.error(err);
@@ -120,6 +227,8 @@ function InterviewPage() {
 
   const handleEndInterview = async () => {
     setIsTyping(true);
+    window.speechSynthesis?.cancel();
+    
     try {
       const history = messages.map(m => ({
         role: m.role,
@@ -136,7 +245,10 @@ function InterviewPage() {
       setReport(data);
       setIsFinished(true);
       
-      // Save to localStorage
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      
       try {
         const existing = localStorage.getItem('mock_interview_scores');
         const scores = existing ? JSON.parse(existing) : [];
@@ -149,7 +261,7 @@ function InterviewPage() {
         scores.push(newScore);
         localStorage.setItem('mock_interview_scores', JSON.stringify(scores));
       } catch (e) {
-        console.error('Failed to save score to localStorage', e);
+        console.error('Failed to save score', e);
       }
       
     } catch (err) {
@@ -166,7 +278,7 @@ function InterviewPage() {
         <div className="max-w-4xl mx-auto w-full flex-1 flex flex-col items-center justify-center animate-fade-in">
           <div className="bg-card/80 backdrop-blur-md border border-border/50 rounded-2xl p-10 shadow-2xl w-full">
             <div className="text-center mb-10">
-              <div className="inline-flex h-20 w-20 rounded-full bg-accent/20 items-center justify-center mb-6 border border-accent/30 shadow-[0_0_30px_rgba(var(--accent),0.3)]">
+              <div className="inline-flex h-20 w-20 rounded-full bg-accent/20 items-center justify-center mb-6 border border-accent/30">
                 <Award className="h-10 w-10 text-accent" />
               </div>
               <h1 className="text-4xl font-bold text-foreground">Interview Final Report</h1>
@@ -217,135 +329,202 @@ function InterviewPage() {
   return (
     <div className="h-screen bg-background text-foreground flex flex-col">
       {/* Header */}
-      <header className="px-6 py-4 border-b border-border/30 bg-card/50 backdrop-blur-md flex items-center justify-between shrink-0">
+      <header className="px-6 py-4 border-b border-border/30 bg-card/50 backdrop-blur-md flex items-center justify-between shrink-0 z-10 relative">
         <div className="flex items-center gap-4">
           <Link to="/results" search={{ keywords: skills }} className="text-muted-foreground hover:text-accent transition-colors">
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-full bg-accent/20 flex items-center justify-center border border-accent/30">
+            <div className="h-10 w-10 rounded-full bg-accent/20 flex items-center justify-center border border-accent/30 shadow-[0_0_15px_rgba(var(--accent),0.5)]">
               <BrainCircuit className="h-6 w-6 text-accent" />
             </div>
             <div>
-              <h1 className="font-bold tracking-wide">AI Interviewer</h1>
+              <h1 className="font-bold tracking-wide">Virtual AI Interviewer</h1>
               <div className="text-xs text-green-400 flex items-center gap-1">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                 </span>
-                Online
+                Live Session
               </div>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-4 sm:gap-6">
           <div className="text-right hidden sm:block">
             <div className="text-xs text-muted-foreground font-medium">DIFFICULTY</div>
             <div className="text-sm font-bold text-accent">{difficulty}</div>
           </div>
-          {score && (
-            <div className="text-right">
-              <div className="text-xs text-muted-foreground font-medium">LATEST SCORE</div>
-              <div className="text-sm font-bold text-accent">{score}</div>
-            </div>
-          )}
           <button 
             onClick={handleEndInterview}
-            className="border border-destructive/50 text-destructive hover:bg-destructive hover:text-destructive-foreground px-4 py-2 rounded-md text-xs font-bold transition-colors"
+            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground px-4 py-2 rounded-md text-xs font-bold transition-all shadow-lg hover:shadow-destructive/50"
           >
             END INTERVIEW
           </button>
         </div>
       </header>
 
-      {/* Chat Area */}
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6" style={{ background: "var(--hero-gradient)" }}>
-        <div className="max-w-3xl mx-auto space-y-6">
-          {messages.length === 0 && !isTyping && (
-            <div className="text-center text-muted-foreground py-10">
-              Failed to initialize interview. Check backend server.
-            </div>
-          )}
+      {/* Main Split Layout */}
+      <main className="flex-1 flex flex-col md:flex-row overflow-hidden" style={{ background: "var(--hero-gradient)" }}>
+        
+        {/* Left Side: Chat History & AI Feedback */}
+        <div className="w-full md:w-1/2 flex flex-col h-1/2 md:h-full border-b md:border-b-0 md:border-r border-border/30 bg-background/40 backdrop-blur-sm">
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+            {messages.length === 0 && !isTyping && (
+              <div className="text-center text-muted-foreground py-10">
+                Failed to initialize interview. Check backend server.
+              </div>
+            )}
 
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-up`}>
-              {msg.role === "model" && (
-                <div className="h-8 w-8 rounded-full bg-accent/20 flex items-center justify-center border border-accent/30 shrink-0 mt-1">
-                  <Bot className="h-4 w-4 text-accent" />
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-up`}>
+                {msg.role === "model" && (
+                  <div className="h-8 w-8 rounded-full bg-accent/20 flex items-center justify-center border border-accent/30 shrink-0 mt-1">
+                    <Bot className="h-4 w-4 text-accent" />
+                  </div>
+                )}
+                
+                <div className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                  msg.role === "user" 
+                    ? "bg-primary text-primary-foreground rounded-tr-sm" 
+                    : "bg-card/80 backdrop-blur-md border border-border shadow-md rounded-tl-sm"
+                }`}>
+                  <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                    {msg.text.split('\n').map((line, i) => (
+                      <span key={i}>
+                        {line.replace(/\*\*(.*?)\*\*/g, '$1')} 
+                        {i !== msg.text.split('\n').length - 1 && <br/>}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              )}
+
+                {msg.role === "user" && (
+                  <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center border border-border shrink-0 mt-1">
+                    <User className="h-4 w-4 text-foreground" />
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {isTyping && (
+              <div className="flex gap-4 justify-start animate-fade-in">
+                <div className="h-8 w-8 rounded-full bg-accent/20 flex items-center justify-center border border-accent/30 shrink-0 mt-1 shadow-[0_0_10px_rgba(var(--accent),0.5)]">
+                  <Bot className="h-4 w-4 text-accent animate-pulse" />
+                </div>
+                <div className="bg-card/80 backdrop-blur-md border border-border shadow-md rounded-2xl rounded-tl-sm px-5 py-4 flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                  <span className="text-sm text-muted-foreground">AI is evaluating...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+
+        {/* Right Side: Video Camera & Controls */}
+        <div className="w-full md:w-1/2 flex flex-col h-1/2 md:h-full p-4 sm:p-6 bg-black/20">
+          <div className="flex-1 relative rounded-2xl overflow-hidden bg-black/80 border border-border/50 shadow-2xl flex items-center justify-center group">
+            {/* Video Element */}
+            {isVideoOn ? (
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                muted 
+                playsInline 
+                className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" 
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center text-muted-foreground">
+                <VideoOff className="h-16 w-16 mb-4 opacity-20" />
+                <p>Camera is turned off</p>
+              </div>
+            )}
+
+            {/* AI Voice Indicator overlay */}
+            {isTyping && (
+              <div className="absolute top-4 left-4 bg-background/80 backdrop-blur-md px-3 py-1.5 rounded-full text-xs font-medium text-accent border border-accent/30 flex items-center gap-2 animate-fade-in">
+                <Loader2 className="h-3 w-3 animate-spin" /> Thinking...
+              </div>
+            )}
+
+            {/* Audio Wave Visualizer Simulation (When Listening) */}
+            {isListening && (
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-background/60 backdrop-blur-md px-4 py-2 rounded-full border border-primary/50">
+                <span className="h-2 w-1 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                <span className="h-4 w-1 bg-primary rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                <span className="h-6 w-1 bg-primary rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                <span className="h-4 w-1 bg-primary rounded-full animate-bounce" style={{ animationDelay: '450ms' }}></span>
+                <span className="h-2 w-1 bg-primary rounded-full animate-bounce" style={{ animationDelay: '600ms' }}></span>
+                <span className="ml-2 text-xs font-bold text-primary">Listening...</span>
+              </div>
+            )}
+
+            {/* Floating Hardware Controls */}
+            <div className="absolute bottom-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button 
+                onClick={() => setIsVideoOn(!isVideoOn)}
+                className={`p-2 rounded-full backdrop-blur-md border ${isVideoOn ? 'bg-background/40 border-border' : 'bg-destructive/80 border-destructive'} transition-colors`}
+                title={isVideoOn ? "Turn Camera Off" : "Turn Camera On"}
+              >
+                {isVideoOn ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
+              </button>
+              <button 
+                onClick={() => {
+                  window.speechSynthesis.cancel();
+                  setIsMuted(!isMuted);
+                }}
+                className={`p-2 rounded-full backdrop-blur-md border ${!isMuted ? 'bg-background/40 border-border' : 'bg-destructive/80 border-destructive'} transition-colors`}
+                title={!isMuted ? "Mute AI Voice" : "Unmute AI Voice"}
+              >
+                {!isMuted ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Voice & Text Input Area */}
+          <div className="mt-4 bg-card/60 backdrop-blur-xl border border-border/50 rounded-2xl p-3 shadow-lg shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleListening}
+                className={`h-12 w-12 rounded-xl flex items-center justify-center shrink-0 transition-all ${
+                  isListening 
+                    ? 'bg-red-500/20 text-red-500 border border-red-500/50 animate-pulse' 
+                    : 'bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30'
+                }`}
+                title="Speak to Answer"
+              >
+                {isListening ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+              </button>
               
-              <div className={`max-w-[85%] rounded-2xl px-5 py-4 ${
-                msg.role === "user" 
-                  ? "bg-primary text-primary-foreground rounded-tr-sm" 
-                  : "bg-card border border-border shadow-md rounded-tl-sm"
-              }`}>
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {/* Basic markdown rendering for the AI response */}
-                  {msg.text.split('\n').map((line, i) => (
-                    <span key={i}>
-                      {line.replace(/\*\*(.*?)\*\*/g, '$1')} 
-                      {i !== msg.text.split('\n').length - 1 && <br/>}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {msg.role === "user" && (
-                <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center border border-border shrink-0 mt-1">
-                  <User className="h-4 w-4 text-foreground" />
-                </div>
-              )}
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                placeholder={isListening ? "Listening... speak now" : "Type your answer or use the microphone..."}
+                disabled={isTyping}
+                className="flex-1 bg-background/50 border border-border/50 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent resize-none shadow-inner disabled:opacity-50 h-12 flex items-center"
+                rows={1}
+              />
+              
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || isTyping}
+                className="h-12 w-12 bg-accent text-accent-foreground rounded-xl flex items-center justify-center shrink-0 hover:bg-accent/90 disabled:opacity-50 transition-all shadow-md"
+              >
+                <Send className="h-5 w-5" />
+              </button>
             </div>
-          ))}
-
-          {isTyping && (
-            <div className="flex gap-4 justify-start animate-fade-in">
-              <div className="h-8 w-8 rounded-full bg-accent/20 flex items-center justify-center border border-accent/30 shrink-0 mt-1">
-                <Bot className="h-4 w-4 text-accent" />
-              </div>
-              <div className="bg-card border border-border shadow-md rounded-2xl rounded-tl-sm px-5 py-4 flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                <span className="text-sm text-muted-foreground">AI is typing...</span>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
+          </div>
         </div>
+
       </main>
-
-      {/* Input Area */}
-      <footer className="p-4 bg-background border-t border-border/50 shrink-0">
-        <div className="max-w-3xl mx-auto relative">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder="Type your answer here... (Press Enter to send)"
-            disabled={isTyping}
-            className="w-full bg-card border border-border rounded-xl pl-5 pr-14 py-4 text-sm focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent resize-none shadow-sm disabled:opacity-50"
-            rows={2}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isTyping}
-            className="absolute right-3 top-1/2 -translate-y-1/2 h-10 w-10 bg-accent text-accent-foreground rounded-lg flex items-center justify-center hover:bg-accent/90 disabled:opacity-50 transition-all"
-          >
-            <Send className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="max-w-3xl mx-auto text-center mt-2">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-widest">
-            Mock Interview powered by Advanced AI
-          </p>
-        </div>
-      </footer>
     </div>
   );
 }

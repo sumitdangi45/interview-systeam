@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
 import { useState, useEffect } from "react";
-import { ArrowLeft, Loader2, Target, CheckCircle2, XCircle, ChevronRight, Award } from "lucide-react";
+import { ArrowLeft, Loader2, Target, CheckCircle2, XCircle, ChevronRight, Award, Mail, Send } from "lucide-react";
 
 const searchSchema = z.object({
   skills: z.string().optional(),
@@ -29,6 +29,44 @@ function McqPage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, number>>({});
   const [isFinished, setIsFinished] = useState(false);
+  
+  const [email, setEmail] = useState("");
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<"idle" | "success" | "error">("idle");
+
+  const handleSendEmail = async (correctCount: number) => {
+    if (!email) return;
+    setIsSendingEmail(true);
+    setEmailStatus("idle");
+    try {
+      const reportData = {
+        score: correctCount,
+        total: questions.length,
+        questions: questions.map((q, idx) => ({
+          question: q.question,
+          userAnswer: selectedAnswers[idx] !== undefined ? q.options[selectedAnswers[idx]] : "Skipped",
+          correctAnswer: q.options[q.correctAnswerIndex],
+          isCorrect: selectedAnswers[idx] === q.correctAnswerIndex,
+          explanation: q.explanation
+        }))
+      };
+
+      const res = await fetch("http://localhost:5000/api/interview/email-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, report: reportData }),
+      });
+      if (res.ok) {
+        setEmailStatus("success");
+      } else {
+        setEmailStatus("error");
+      }
+    } catch (err) {
+      setEmailStatus("error");
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -75,6 +113,25 @@ function McqPage() {
       setCurrentIndex(currentIndex + 1);
     } else {
       setIsFinished(true);
+      // Save Score to LocalStorage
+      const finalAnswers = { ...selectedAnswers };
+      const correctCount = questions.reduce((count, q, idx) => {
+        return count + (finalAnswers[idx] === q.correctAnswerIndex ? 1 : 0);
+      }, 0);
+      
+      try {
+        const existing = localStorage.getItem('mcq_test_scores');
+        const scores = existing ? JSON.parse(existing) : [];
+        scores.push({
+          date: new Date().toISOString(),
+          score: correctCount,
+          total: questions.length,
+          skills: skills || "General Skills"
+        });
+        localStorage.setItem('mcq_test_scores', JSON.stringify(scores));
+      } catch (e) {
+        console.error('Failed to save score', e);
+      }
     }
   };
 
@@ -166,6 +223,33 @@ function McqPage() {
                 </div>
               );
             })}
+          </div>
+
+          <div className="mt-12 bg-card/80 backdrop-blur-md border border-border/50 rounded-2xl p-8 shadow-xl max-w-xl mx-auto text-center">
+            <Mail className="h-10 w-10 text-accent mx-auto mb-4" />
+            <h3 className="text-xl font-bold mb-2">Get Your Detailed Report</h3>
+            <p className="text-sm text-muted-foreground mb-6">Enter your email address to receive a copy of your test score and detailed answer explanations.</p>
+            
+            <div className="flex gap-2 max-w-md mx-auto">
+              <input
+                type="email"
+                placeholder="Enter your email..."
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={isSendingEmail || emailStatus === "success"}
+                className="flex-1 bg-background border border-border rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-accent"
+              />
+              <button
+                onClick={() => handleSendEmail(correctCount)}
+                disabled={!email || isSendingEmail || emailStatus === "success"}
+                className="bg-accent text-accent-foreground px-6 py-3 rounded-lg font-medium hover:bg-accent/90 disabled:opacity-50 flex items-center gap-2 transition-all"
+              >
+                {isSendingEmail ? <Loader2 className="h-4 w-4 animate-spin" /> : (emailStatus === "success" ? <CheckCircle2 className="h-4 w-4" /> : <Send className="h-4 w-4" />)}
+                {emailStatus === "success" ? "Sent!" : "Send"}
+              </button>
+            </div>
+            {emailStatus === "success" && <p className="text-green-500 text-xs mt-3 font-medium">Report sent successfully! Check your inbox.</p>}
+            {emailStatus === "error" && <p className="text-destructive text-xs mt-3 font-medium">Failed to send email. Please check server configuration.</p>}
           </div>
 
           <div className="mt-12 text-center">

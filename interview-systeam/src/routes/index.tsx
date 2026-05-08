@@ -19,6 +19,7 @@ function Index() {
   const [dragOver, setDragOver] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [scores, setScores] = useState<any[]>([]);
+  const [mcqScores, setMcqScores] = useState<any[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
@@ -29,6 +30,12 @@ function Index() {
         // Sort descending by date
         const parsed = JSON.parse(existing);
         setScores(parsed.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+      }
+      
+      const existingMcq = localStorage.getItem('mcq_test_scores');
+      if (existingMcq) {
+        const parsedMcq = JSON.parse(existingMcq);
+        setMcqScores(parsedMcq.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()));
       }
     } catch (e) {
       console.error(e);
@@ -258,6 +265,35 @@ function Index() {
               <p className="text-muted-foreground max-w-md mx-auto">
                 Upload your resume below and take your first AI Mock Interview. Your scores and feedback will appear here!
               </p>
+            </div>
+          )}
+
+          {mcqScores.length > 0 && (
+            <div className="mt-16 animate-fade-in">
+              <h3 className="text-2xl font-bold mb-6 flex items-center justify-center md:justify-start gap-2">
+                <Target className="h-6 w-6 text-accent" /> MCQ Test Scores
+              </h3>
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {mcqScores.map((score, i) => (
+                  <div key={i} className="bg-card/50 backdrop-blur-sm border border-border/50 rounded-xl p-6 shadow-xl transition-all hover:-translate-y-2 hover:shadow-accent/20">
+                    <div className="flex justify-between items-start mb-4 gap-4">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-xl font-bold text-foreground truncate">Technical MCQ Quiz</h3>
+                        <p className="text-sm text-muted-foreground truncate">{score.skills || "General Skills"}</p>
+                      </div>
+                      <div className="shrink-0 whitespace-nowrap bg-green-500/20 border border-green-500/30 text-green-400 font-bold px-3 py-1 rounded-full text-sm">
+                        {score.score} / {score.total}
+                      </div>
+                    </div>
+                    <div className="w-full bg-muted rounded-full h-2 mb-6 overflow-hidden">
+                      <div className="bg-green-500 h-full transition-all" style={{ width: `${(score.score / score.total) * 100}%` }} />
+                    </div>
+                    <div className="text-[10px] text-muted-foreground text-right border-t border-border/50 pt-3">
+                      {new Date(score.date).toLocaleDateString()} at {new Date(score.date).toLocaleTimeString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
